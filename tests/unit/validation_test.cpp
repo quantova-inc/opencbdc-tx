@@ -314,6 +314,71 @@ TEST_F(WalletTxValidationTest, summation_overflow) {
             cbdc::transaction::validation::tx_error_code::value_overflow));
 }
 
+TEST_F(WalletTxValidationTest, witness_invalid_p2pk_len_too_long) {
+    m_valid_tx.m_witness[0].resize(
+        cbdc::transaction::validation::p2pk_witness_len + 1);
+    auto err = cbdc::transaction::validation::check_witness(m_valid_tx, 0);
+    ASSERT_TRUE(err.has_value());
+    ASSERT_EQ(err.value(),
+              cbdc::transaction::validation::witness_error_code::malformed);
+}
+
+TEST_F(WalletTxValidationTest,
+       check_transaction_with_missing_witness_program_type) {
+    m_valid_tx.m_witness[0].clear();
+    auto err = cbdc::transaction::validation::check_tx(m_valid_tx);
+    ASSERT_TRUE(err.has_value());
+    ASSERT_TRUE(
+        std::holds_alternative<cbdc::transaction::validation::witness_error>(
+            err.value()));
+
+    auto wit_err
+        = std::get<cbdc::transaction::validation::witness_error>(err.value());
+
+    ASSERT_EQ(wit_err.m_idx, uint64_t{0});
+    ASSERT_EQ(wit_err.m_code,
+              cbdc::transaction::validation::witness_error_code::
+                  missing_witness_program_type);
+}
+
+TEST_F(WalletTxValidationTest, witness_dispatch_rejects_unknown_types) {
+    for(int type_byte = 1; type_byte <= 255; type_byte++) {
+        m_valid_tx.m_witness[0][0]
+            = std::byte(static_cast<uint8_t>(type_byte));
+        auto err = cbdc::transaction::validation::check_witness(m_valid_tx, 0);
+        ASSERT_TRUE(err.has_value());
+        ASSERT_EQ(err.value(),
+                  cbdc::transaction::validation::witness_error_code::
+                      unknown_witness_program_type);
+    }
+}
+
+TEST_F(WalletTxValidationTest, witness_commitment_binds_scheme_selector) {
+    const auto& wit = m_valid_tx.m_witness[0];
+    ASSERT_EQ(static_cast<uint8_t>(wit[0]),
+              static_cast<uint8_t>(
+                  cbdc::transaction::validation::witness_program_type::p2pk));
+
+    const auto commitment = cbdc::hash_data(
+        wit.data(),
+        cbdc::transaction::validation::p2pk_witness_prog_len);
+
+    ASSERT_TRUE(
+        commitment
+        == m_valid_tx.m_inputs[0].m_prevout_data.m_witness_program_commitment);
+}
+
+TEST_F(WalletTxValidationTest, witness_p2pk_invalid_signature_tail) {
+    const auto last_byte = cbdc::transaction::validation::p2pk_witness_len - 1;
+    m_valid_tx.m_witness[0][last_byte]
+        = std::byte(uint8_t(m_valid_tx.m_witness[0][last_byte]) + 1);
+    auto err = cbdc::transaction::validation::check_witness(m_valid_tx, 0);
+    ASSERT_TRUE(err.has_value());
+    ASSERT_EQ(
+        err.value(),
+        cbdc::transaction::validation::witness_error_code::invalid_signature);
+}
+
 TEST_F(WalletTxValidationTest, sign_verify_compact) {
     auto ctx = cbdc::transaction::compact_tx(m_valid_tx);
     auto att0 = ctx.sign(m_secp.get(), m_priv0);
